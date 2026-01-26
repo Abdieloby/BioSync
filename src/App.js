@@ -98,25 +98,31 @@ const getLocalDateKey = (date = new Date()) => {
 };
 
 const calculateStreakStats = (dates) => {
-  const sortedDates = [...new Set(dates)].sort();
-  if (sortedDates.length === 0)
+  if (!dates || dates.length === 0)
     return { currentStreak: 0, maxStreak: 0, maxStreakDate: null };
+
+  // 1. Deduplicate & Sort
+  const uniqueDates = [...new Set(dates)].sort();
+
+  // 2. Helper to get "Epoch Days" (integer) from YYYY-MM-DD
+  //    Treating YYYY-MM-DD as UTC midnight prevents timezone drift issues during diffing.
+  const toEpochDay = (dateStr) => Math.floor(Date.parse(dateStr) / 86400000);
 
   let currentStreak = 0;
   let maxStreak = 0;
   let maxStreakDate = null;
   let tempStreak = 0;
-  let lastDate = null;
+  let lastEpoch = null;
 
-  // Calculate Max Streak
-  for (let i = 0; i < sortedDates.length; i++) {
-    const d = new Date(sortedDates[i]);
-    if (lastDate) {
-      const diffTime = Math.abs(d - lastDate);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      if (diffDays === 1) {
+  // 3. Calculate Max Streak (Robust Iteration)
+  for (const dateStr of uniqueDates) {
+    const epoch = toEpochDay(dateStr);
+
+    if (lastEpoch !== null) {
+      if (epoch - lastEpoch === 1) {
         tempStreak++;
       } else {
+        // Gap detected: reset
         tempStreak = 1;
       }
     } else {
@@ -125,22 +131,37 @@ const calculateStreakStats = (dates) => {
 
     if (tempStreak > maxStreak) {
       maxStreak = tempStreak;
-      maxStreakDate = sortedDates[i];
+      maxStreakDate = dateStr;
     }
-    lastDate = d;
+    lastEpoch = epoch;
   }
 
-  // Calculate Current Streak
-  const today = getLocalDateKey();
-  const yesterday = getLocalDateKey(new Date(Date.now() - 86400000));
-  const hasToday = sortedDates.includes(today);
-  const hasYesterday = sortedDates.includes(yesterday);
+  // 4. Calculate Current Streak
+  //    "Active" means the streak includes Today OR Yesterday.
+  const todayStr = getLocalDateKey();
+  const d = new Date();
+  d.setDate(d.getDate() - 1); // Safe "Yesterday" calculation
+  const yesterdayStr = getLocalDateKey(d);
+
+  const hasToday = uniqueDates.includes(todayStr);
+  const hasYesterday = uniqueDates.includes(yesterdayStr);
 
   if (hasToday || hasYesterday) {
+    // Determine start point for backward check
     let checkDate = hasToday ? new Date() : new Date(Date.now() - 86400000);
+    // Note: If using strict yesterday object above, we can use that too, 
+    // but Date.now() - 864k is generally safe for "24h ago" check logic if consistently applied.
+    // Ideally we reconcile to using the same Date object logic, but let's stick to the key generation.
+
+    // Actually, let's match the logic:
+    if (!hasToday) {
+      checkDate = new Date();
+      checkDate.setDate(checkDate.getDate() - 1);
+    }
+
     while (true) {
       const dateKey = getLocalDateKey(checkDate);
-      if (sortedDates.includes(dateKey)) {
+      if (uniqueDates.includes(dateKey)) {
         currentStreak++;
         checkDate.setDate(checkDate.getDate() - 1);
       } else {
@@ -454,7 +475,7 @@ const AICoachView = ({ user, history, saveEntry }) => {
     if (!user) return;
     const q = query(
       collection(db, "users", user.uid, "ai_chat"),
-      orderBy("timestamp", "asc"),
+      orderBy("timestamp", "desc"), // Fetch NEWEST first
       limit(50)
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -464,12 +485,13 @@ const AICoachView = ({ user, history, saveEntry }) => {
         setMessages([
           {
             role: "assistant",
-            content: "Hey! Ready to hit some PRs or fix that gut? logical next step?",
+            content: "Hey! Ready to hit some PRs or fix that gut? Any updates?",
             timestamp: new Date().toISOString(),
           },
         ]);
       } else {
-        setMessages(msgs);
+        // Reverse to show Chronological (Oldest -> Newest) in UI
+        setMessages(msgs.reverse());
       }
     });
     return () => unsubscribe();
@@ -1707,13 +1729,22 @@ const Records = ({ history, habitsList }) => {
   const gymDates = history
     .filter((h) => h.type === "gym_set")
     .map((h) => h.data.targetDate || getLocalDateKey(new Date(h.data.timestamp)));
-  const { maxStreak, maxStreakDate, currentStreak } = calculateStreakStats(gymDates);
+  const gymStats = calculateStreakStats(gymDates);
 
-  // 2. Habit Streaks
-  const habitStreaks = {};
+  // 2. Habit Streaks (Deduplicated Logic)
+  // Group by Date -> Take latest Timestamp
+  const habitsByDate = {};
   history.filter((h) => h.type === "habits").forEach((h) => {
-    const date = h.data.targetDate || getLocalDateKey(new Date(h.data.timestamp));
-    (h.data.completed || []).forEach((hid) => {
+    const k = h.data.targetDate || getLocalDateKey(new Date(h.data.timestamp));
+    // If multiple entries for same date, use one with latest timestamp
+    if (!habitsByDate[k] || new Date(h.data.timestamp) > new Date(habitsByDate[k].timestamp)) {
+      habitsByDate[k] = { completed: h.data.completed || [], timestamp: h.data.timestamp };
+    }
+  });
+
+  const habitStreaks = {}; // habitID -> [dates]
+  Object.keys(habitsByDate).forEach(date => {
+    habitsByDate[date].completed.forEach(hid => {
       if (!habitStreaks[hid]) habitStreaks[hid] = [];
       habitStreaks[hid].push(date);
     });
@@ -1727,57 +1758,74 @@ const Records = ({ history, habitsList }) => {
     const label = found ? found.label : (id.startsWith("h_") ? "Custom Habit" : id);
     return { id, label, ...stats };
   }).sort((a, b) => {
+    // 1. Active streaks on top
     if (a.currentStreak > 0 && b.currentStreak === 0) return -1;
     if (a.currentStreak === 0 && b.currentStreak > 0) return 1;
+    // 2. Longest active streak
+    if (a.currentStreak !== b.currentStreak) return b.currentStreak - a.currentStreak;
+    // 3. Longest historical streak
     return b.maxStreak - a.maxStreak;
   });
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-4">
+    <div className="bg-white rounded-3xl border border-slate-100 p-5 space-y-5 shadow-sm">
       {/* Workout Streak Display */}
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center p-3 bg-slate-50 rounded-2xl border border-slate-100/50">
         <div className="flex items-center space-x-3">
-          <div className="p-2 bg-cyan-50 text-cyan-600 rounded-lg">
-            <Dumbbell size={18} />
+          <div className="p-2.5 bg-white shadow-sm text-cyan-600 rounded-xl">
+            <Dumbbell size={20} />
           </div>
           <div>
-            <h4 className="font-bold text-sm text-slate-700">Workout Streak</h4>
-            <p className="text-[10px] text-slate-400 uppercase font-bold flex gap-2">
-              {currentStreak > 0 && <span className="text-orange-500">Active: {currentStreak}</span>}
-              <span>Best: {maxStreak}</span>
-            </p>
+            <h4 className="font-bold text-sm text-slate-700">Gym Sessions</h4>
+            <div className="flex gap-2 mt-0.5">
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${gymStats.currentStreak > 0 ? "bg-orange-100 text-orange-600" : "bg-slate-200 text-slate-500"}`}>
+                {gymStats.currentStreak > 0 ? "STREAKING" : "RESTING"}
+              </span>
+            </div>
           </div>
         </div>
         <div className="text-right">
-          <span className="block font-bold text-lg text-slate-800">{currentStreak > 0 ? currentStreak : maxStreak} Days</span>
-          {maxStreakDate && <span className="text-[10px] text-slate-400">{new Date(maxStreakDate).toLocaleDateString()}</span>}
+          <p className="text-[10px] text-slate-400 font-bold uppercase">Current / Best</p>
+          <span className="block font-black text-xl text-slate-900 leading-tight">
+            {gymStats.currentStreak} <span className="text-slate-300 text-sm font-bold">/ {gymStats.maxStreak}</span>
+          </span>
         </div>
       </div>
 
-      {/* Podium Display */}
-      {podium.map(p => {
-        if (p.maxStreak === 0) return null;
-        return (
-          <div key={p.id} className="flex justify-between items-center border-t border-slate-50 pt-3">
-            <div className="flex items-center space-x-3">
-              <div className={`p-2 rounded-lg ${p.currentStreak > 0 ? "bg-orange-50 text-orange-500" : "bg-purple-50 text-purple-600"}`}>
-                {p.currentStreak > 0 ? <Flame size={18} className="fill-orange-500" /> : <Sparkles size={18} />}
+      {/* Habit Podium */}
+      <div className="space-y-3">
+        {podium.map(p => {
+          if (p.maxStreak === 0) return null;
+          const isActive = p.currentStreak > 0;
+          return (
+            <div key={p.id} className={`flex justify-between items-center p-3 rounded-2xl border transition-all ${isActive ? "bg-white border-slate-100" : "bg-slate-50/50 border-transparent opacity-70"}`}>
+              <div className="flex items-center space-x-3">
+                <div className={`p-2 rounded-xl ${isActive ? "bg-orange-50 text-orange-500" : "bg-slate-100 text-slate-400"}`}>
+                  {isActive ? <Flame size={18} className="fill-orange-500" /> : <Sparkles size={18} />}
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-slate-700">{p.label}</h4>
+                  <p className="text-[9px] text-slate-400 font-bold flex gap-2">
+                    {isActive ? (
+                      <span className="text-orange-500 uppercase">ACTIVE • {p.currentStreak}D</span>
+                    ) : (
+                      <span className="text-slate-400 uppercase">INACTIVE • PREV: {p.maxStreak}D</span>
+                    )}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h4 className="font-bold text-sm text-slate-700">{p.label}</h4>
-                <p className="text-[10px] text-slate-400 uppercase font-bold flex gap-2">
-                  {p.currentStreak > 0 && <span className="text-orange-500">Active: {p.currentStreak}</span>}
-                  <span>Best: {p.maxStreak}</span>
-                </p>
+              <div className="text-right">
+                <p className="text-[9px] text-slate-300 font-bold uppercase">Best</p>
+                <span className="block font-black text-lg text-slate-800 leading-none">
+                  {p.maxStreak} <span className="text-[10px] font-bold text-slate-400 ml-0.5">DAYS</span>
+                </span>
+                {/* Debug Info (Optional - remove if clean) */}
+                {/* <span className="text-[8px] text-slate-200 block">{p.maxStreakDate}</span> */}
               </div>
             </div>
-            <div className="text-right">
-              <span className="block font-bold text-lg text-slate-800">{p.currentStreak > 0 ? p.currentStreak : p.maxStreak} Days</span>
-              {p.maxStreakDate && <span className="text-[10px] text-slate-400">{new Date(p.maxStreakDate).toLocaleDateString()}</span>}
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 };
