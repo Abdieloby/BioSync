@@ -62,6 +62,9 @@ import {
   Sparkles,
   Camera,
   Trophy,
+  Home,
+  Bell,
+  Volume2,
 } from "lucide-react";
 
 /**
@@ -418,12 +421,121 @@ const AuthView = ({ onComplete }) => {
   );
 };
 
+const HomeView = ({ user, history, setActiveTab }) => {
+  const [greeting, setGreeting] = useState("");
+
+  useEffect(() => {
+    const hr = new Date().getHours();
+    if (hr < 12) setGreeting("Good Morning");
+    else if (hr < 18) setGreeting("Good Afternoon");
+    else setGreeting("Good Evening");
+  }, []);
+
+  const todayStr = getLocalDateKey();
+
+  // Status Checks
+  const moodLogged = history.some(h => h.type === 'daily_metrics' && h.data.targetDate === todayStr);
+  const gymLogged = history.some(h => h.type === 'gym_set' && h.data.targetDate === todayStr);
+  const habitsDone = history
+    .find(h => h.type === 'habits' && h.data.targetDate === todayStr)
+    ?.data.completed?.length || 0;
+
+  // Notifications
+  const requestNotify = async () => {
+    if (!("Notification" in window)) return alert("Browser does not support notifications");
+    const permission = await Notification.requestPermission();
+    if (permission === "granted") {
+      new Notification("BioSync Reminders Enabled", { body: "We'll remind you to log your day." });
+    }
+  };
+
+  return (
+    <div className="pb-32 bg-slate-50 min-h-screen">
+      <header className="px-6 pt-12 pb-6 bg-white border-b border-slate-50">
+        <div className="flex justify-between items-center">
+          <div>
+            <p className="text-slate-400 font-bold text-xs uppercase tracking-wide">{greeting}</p>
+            <h1 className="text-3xl font-black text-slate-800 tracking-tight mt-1">
+              {user.email ? user.email.split('@')[0] : 'Guest'}
+            </h1>
+          </div>
+          <div className="p-2 bg-slate-100 rounded-full text-slate-400">
+            <Bell size={20} onClick={requestNotify} className="cursor-pointer hover:text-cyan-600 transition-colors" />
+          </div>
+        </div>
+      </header>
+
+      <div className="px-5 mt-6 space-y-6 max-w-md mx-auto">
+        {/* Quick Stats Grid */}
+        <div className="grid grid-cols-2 gap-4">
+          {/* Mood Status */}
+          <div onClick={() => setActiveTab('experience')} className={`p-4 rounded-3xl border transition-all cursor-pointer ${moodLogged ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-slate-100 hover:border-cyan-200'}`}>
+            <div className="flex justify-between items-start mb-2">
+              <div className={`p-2 rounded-xl ${moodLogged ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-50 text-slate-400'}`}>
+                <Heart size={20} className={moodLogged ? "fill-current" : ""} />
+              </div>
+              {moodLogged && <CheckCircle2 size={16} className="text-emerald-500" />}
+            </div>
+            <h3 className="font-bold text-slate-700">Mood</h3>
+            <p className="text-xs text-slate-400 font-medium">{moodLogged ? "Logged" : "Tap to log"}</p>
+          </div>
+
+          {/* Gym Status */}
+          <div onClick={() => setActiveTab('gym')} className={`p-4 rounded-3xl border transition-all cursor-pointer ${gymLogged ? 'bg-cyan-50 border-cyan-100' : 'bg-white border-slate-100 hover:border-cyan-200'}`}>
+            <div className="flex justify-between items-start mb-2">
+              <div className={`p-2 rounded-xl ${gymLogged ? 'bg-cyan-100 text-cyan-600' : 'bg-slate-50 text-slate-400'}`}>
+                <Dumbbell size={20} />
+              </div>
+              {gymLogged && <CheckCircle2 size={16} className="text-cyan-500" />}
+            </div>
+            <h3 className="font-bold text-slate-700">Gym</h3>
+            <p className="text-xs text-slate-400 font-medium">{gymLogged ? "Worked Out" : "Tap to log"}</p>
+          </div>
+        </div>
+
+        {/* Habits Brief */}
+        <div onClick={() => setActiveTab('habits')} className="p-5 bg-indigo-50 rounded-3xl border border-indigo-100 flex items-center justify-between cursor-pointer">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-white text-indigo-500 rounded-2xl shadow-sm">
+              <ListTodo size={24} />
+            </div>
+            <div>
+              <h3 className="font-black text-lg text-indigo-900">{habitsDone} Habits</h3>
+              <p className="text-xs font-bold text-indigo-400 uppercase">Completed Today</p>
+            </div>
+          </div>
+          <div className="bg-white p-2 rounded-full text-indigo-300">
+            <Plus size={20} />
+          </div>
+        </div>
+
+        {/* AI Call to Action */}
+        <div onClick={() => setActiveTab('ai')} className="p-6 bg-slate-900 rounded-3xl shadow-xl shadow-slate-200 cursor-pointer group relative overflow-hidden">
+          <div className="relative z-10 flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-white text-lg">Daily Briefing</h3>
+              <p className="text-slate-400 text-sm mt-1">Ask your AI coach for a plan.</p>
+            </div>
+            <div className="p-3 bg-white/10 rounded-2xl text-cyan-400 group-hover:scale-110 transition-transform">
+              <Sparkles size={24} />
+            </div>
+          </div>
+          {/* Background Decoration */}
+          <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none"></div>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
 // --- App Navigation ---
 const TabNav = ({ activeTab, setActiveTab }) => {
   const tabs = [
+    { id: "home", icon: Home, label: "Home" }, // NEW Home Tab
     { id: "experience", icon: Heart, label: "Mood" },
     { id: "habits", icon: ListTodo, label: "Habits" },
-    { id: "ai", icon: Sparkles, label: "AI Coach" }, // Center Tab
+    { id: "ai", icon: Sparkles, label: "Coach" },
     { id: "gut", icon: Brain, label: "Gut" },
     { id: "gym", icon: Dumbbell, label: "Gym" },
     { id: "report", icon: Book, label: "Report" },
@@ -997,6 +1109,40 @@ const HabitsView = ({
     [selectedDate, historyMap]
   );
 
+  // --- Audio Feedback ---
+  const playSound = (type) => {
+    // Simple synthesized beeps using Web Audio API would be ideal, 
+    // but for now we'll use a very short, pleasant organic sound URL or silent fallback if offline.
+    // Using a simple efficient strategy: visual feedback is primary, audio is nice-to-have.
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      if (type === 'success') {
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(500, audioCtx.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(1000, audioCtx.currentTime + 0.1);
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + 0.1);
+      } else if (type === 'save') {
+        oscillator.type = 'triangle';
+        oscillator.frequency.setValueAtTime(300, audioCtx.currentTime);
+        gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + 0.1);
+      }
+    } catch (e) {
+      console.warn("Audio play failed", e);
+    }
+  };
+
   // --- Streak Calculation ---
   const calculateStreak = (habitId) => {
     let streak = 0;
@@ -1027,6 +1173,10 @@ const HabitsView = ({
       const n = prev.includes(id)
         ? prev.filter((i) => i !== id)
         : [...prev, id];
+
+      // Sound feedback if completing
+      if (!prev.includes(id)) playSound('success');
+
       saveEntry("habits", {
         completed: n,
         targetDate: selectedDate,
@@ -2104,7 +2254,7 @@ const ReportView = ({ habitsList, history }) => {
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState("ai"); // Default to AI Coach
+  const [activeTab, setActiveTab] = useState("home"); // Default to HOME
   const [history, setHistory] = useState([]);
   const [schedule, setSchedule] = useState(DEFAULT_SCHEDULE);
   const [habitsList, setHabitsList] = useState(DEFAULT_HABITS);
@@ -2184,6 +2334,9 @@ export default function App() {
 
   return (
     <div className="font-sans text-slate-900">
+      {activeTab === "home" && (
+        <HomeView user={user} history={history} setActiveTab={setActiveTab} />
+      )}
       {activeTab === "experience" && (
         <ExperienceView
           user={user}
